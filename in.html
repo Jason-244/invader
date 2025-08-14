@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Invader 1978 — Swipe Move + FIRE Button</title>
+<style>
+  :root { --maxw: 480px; }
+  html, body { margin:0; background:#000; color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  #hud { width:min(100vw, var(--maxw)); display:flex; justify-content:space-between; font-weight:700; letter-spacing:1px; }
+  #canvas { width:min(100vw, var(--maxw)); height: calc(min(100vw, var(--maxw)) * 1.25); border:2px solid #111; touch-action:none; background:#000; }
+  #controls { width:min(100vw, var(--maxw)); display:grid; grid-template-columns: 108px 1fr; gap:8px; }
+  #fireBtn { height:64px; background:#c33; color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; border-radius:10px; user-select:none; touch-action:none; box-shadow:0 0 0 2px #531 inset, 0 4px 0 #611; }
+  #fireBtn:active { transform: translateY(2px); box-shadow:0 0 0 2px #531 inset, 0 2px 0 #611; }
+  #dragZone { height:64px; background:#121212; color:#8aa; display:flex; align-items:center; justify-content:center; border-radius:10px; user-select:none; touch-action:none; border:1px dashed #333; }
+  #hint { font-size:12px; color:#9aa; opacity:.85; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <div>1UP <span id="score">0000</span></div>
+      <div>HI <span id="hiscore">0000</span></div>
+      <div>ROUND <span id="round">01</span></div>
+    </div>
+    <canvas id="canvas" width="384" height="480" aria-label="game canvas"></canvas>
+    <div id="controls">
+      <div id="fireBtn" aria-label="fire button">FIRE</div>
+      <div id="dragZone" aria-label="move by swiping">여기에서 스와이프로 좌우 이동</div>
+    </div>
+    <div id="hint">사운드가 안 들리면 FIRE 버튼 또는 스와이프 한 번으로 활성화됩니다. PC는 화살표키 보조 가능.</div>
+  </div>
+
+<script>
+(() => {
+  // ---------- Canvas ----------
+  const cvs = document.getElementById('canvas');
+  const ctx = cvs.getContext('2d');
+  const W = cvs.width, H = cvs.height;
+
+  const scoreEl = document.getElementById('score');
+  const hiscoreEl = document.getElementById('hiscore');
+  const roundEl = document.getElementById('round');
+
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rand = (a,b) => Math.random()*(b-a)+a;
+  const now = () => performance.now();
+
+  // ---------- WebAudio ----------
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let actx = null;
+  function ensureAudio(){ if(!actx) actx = new AudioCtx(); }
+  function beep({freq=440, dur=0.08, type='square', gain=0.04}){
+    if(!actx) return;
+    const o=actx.createOscillator(), g=actx.createGain();
+    o.type=type; o.frequency.value=freq; g.gain.value=gain;
+    o.connect(g).connect(actx.destination);
+    o.start(); o.stop(actx.currentTime+dur);
+  }
+  function stepTone(i){ const t=[110,146,196,261]; beep({freq:t[i%4],dur:0.06,type:'square',gain:0.06}); }
+  function shootTone(){ beep({freq:740,dur:0.05,type:'square',gain:0.06}); }
+  function hitTone(){ beep({freq:120,dur:0.12,type:'sawtooth',gain:0.06}); }
+  function ufoTone(){ beep({freq:330,dur:0.2,type:'triangle',gain:0.05}); }
+
+  // ---------- State ----------
+  let state = {
+    running:true, score:0, hiscore:0, round:1,
+    lastShot:0, fireCooldown:280,
+    lastEnemyShot:0, enemyFireCD:740,
+    stepTimer:0, stepInterval:520, dir:1, dropNext:false,
+    lives:3, stepSoundIdx:0
+  };
+
+  // ---------- Pixel Sprites ----------
+  const SPRITES = {
+    cannon:{ w:13,h:8,data:[
+      "0000011100000",
+      "0000111110000",
+      "0001111111000",
+      "1111111111111",
+      "1111111111111",
+      "1111111111111",
+      "0001111111000",
+      "0000011100000",
+    ]},
+    octo:{ w:11,h:8,data:[
+      "00111110000",
+      "01111111000",
+      "11100111100",
+      "11111111100",
+      "11101110110",
+      "00110011000",
+      "01100001100",
+      "11000000110",
+    ]},
+    crab:{ w:11,h:8,data:[
+      "00111111000",
+      "11111111100",
+      "11011011000",
+      "11111111100",
+      "00110110000",
+      "01100001100",
+      "11000000110",
+      "00000000000",
+    ]},
+    squid:{ w:11,h:8,data:[
+      "00001110000",
+      "00011111000",
+      "00111111100",
+      "01101010110",
+      "11111111111",
+      "00110011000",
+      "01100001100",
+      "11000000110",
+    ]},
+    ufo:{ w:16,h:7,data:[
+      "0000011111110000",
+      "0001111111111100",
+      "0011111111111110",
+      "0111111111111111",
+      "0011111111111110",
+      "0001111111111100",
+      "0000011111110000"
+    ]}
+  };
+  function drawMask(x,y,sp,scale,color="#fff"){
+    ctx.save(); ctx.translate(x,y); ctx.fillStyle=color;
+    for(let r=0;r<sp.h;r++){ const row=sp.data[r];
+      for(let c=0;c<sp.w;c++){ if(row[c]==="1"){
+        ctx.fillRect((c-sp.w/2)*scale,(r-sp.h/2)*scale,scale,scale);
+      }}
+    } ctx.restore();
+  }
+
+  // ---------- Player ----------
+  const player = { x:W/2, y:H-70, scale:2, speed:260 };
+  function playerBox(){ return { w:SPRITES.cannon.w*player.scale, h:SPRITES.cannon.h*player.scale }; }
+
+  // ---------- Bullets/Missiles ----------
+  const bullets=[], missiles=[];
+
+  // ---------- Enemies ----------
+  const COLS=11, ROWS=5, eScale=2;
+  const formation = { x:32, y:70, gapX:8, gapY:10 };
+  const ENEMY_TYPES=[
+    {name:'octo', score:10, color:'#7fff7f'},
+    {name:'crab', score:20, color:'#7fd6ff'},
+    {name:'crab', score:20, color:'#7fd6ff'},
+    {name:'squid', score:30, color:'#d49cff'},
+    {name:'squid', score:30, color:'#d49cff'},
+  ];
+  const enemies=[];
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const sp=SPRITES[ENEMY_TYPES[r].name];
+    enemies.push({ alive:true, r,c,
+      x: formation.x + c*(sp.w*eScale + formation.gapX),
+      y: formation.y + r*(sp.h*eScale + formation.gapY) });
+  }
+
+  // ---------- Shields ----------
+  const shields=[];
+  const shieldPattern=[
+    0,1,1,1,1,1,1,1,0,
+    1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,
+    1,1,1,0,0,0,1,1,1,
+    1,1,1,0,0,0,1,1,1,
+    1,1,1,1,1,1,1,1,1,
+  ];
+  const SH_W=9, SH_H=6, SH_SZ=4;
+  const shieldY=H-120, shieldXs=[W*0.1,W*0.3,W*0.5,W*0.7];
+  for(let i=0;i<4;i++) shields.push({x:shieldXs[i],y:shieldY,mask:[...shieldPattern]});
+
+  // ---------- UFO ----------
+  let ufo=null, nextUfoAt=now()+rand(8000,14000);
+
+  // ---------- Controls ----------
+  const dragZone=document.getElementById('dragZone');
+  const fireBtn=document.getElementById('fireBtn');
+  let dragging=false, activeId=null, startLX=0, playerStartX=0;
+  function toLocalXFromEvent(e){ const rect=cvs.getBoundingClientRect(); const ratio=W/rect.width; return (e.clientX-rect.left)*ratio; }
+
+  dragZone.addEventListener('pointerdown', e=>{
+    ensureAudio(); dragZone.setPointerCapture(e.pointerId);
+    dragging=true; activeId=e.pointerId; startLX=toLocalXFromEvent(e); playerStartX=player.x;
+  });
+  dragZone.addEventListener('pointermove', e=>{
+    if(dragging && e.pointerId===activeId){
+      const curLX=toLocalXFromEvent(e);
+      const dx = curLX - startLX; // canvas 좌표계 기준
+      player.x = clamp(playerStartX + dx, 20, W-20);
+    }
+  });
+  function endDrag(){ dragging=false; activeId=null; }
+  dragZone.addEventListener('pointerup', endDrag);
+  dragZone.addEventListener('pointercancel', endDrag);
+
+  let firing=false, nextShot=0;
+  function tryShoot(t){
+    if(t - state.lastShot >= state.fireCooldown){
+      bullets.push({x:player.x, y:player.y-14, vy:-360});
+      state.lastShot=t; nextShot=t+state.fireCooldown; shootTone();
+    }
+  }
+  fireBtn.addEventListener('pointerdown', e=>{ ensureAudio(); fireBtn.setPointerCapture(e.pointerId); firing=true; tryShoot(performance.now()); });
+  fireBtn.addEventListener('pointerup',   ()=>{ firing=false; });
+  fireBtn.addEventListener('pointercancel', ()=>{ firing=false; });
+
+  // Keyboard assist
+  const keys=new Set();
+  window.addEventListener('keydown', e=>{ keys.add(e.key); ensureAudio(); if(e.key===' ') { firing=true; tryShoot(performance.now()); e.preventDefault(); }});
+  window.addEventListener('keyup', e=>{ keys.delete(e.key); if(e.key===' ') firing=false; });
+
+  // ---------- Helpers ----------
+  function clear(){ ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H); }
+  function drawText(text,x,y,size=10,align='left'){ ctx.fillStyle='#fff'; ctx.font=`bold ${size}px monospace`; ctx.textAlign=align; ctx.fillText(text,x,y); }
+  function drawCannon(){ drawMask(player.x, player.y, SPRITES.cannon, player.scale, '#00ff66'); }
+  function drawEnemy(e){ const t=ENEMY_TYPES[e.r]; drawMask(e.x,e.y, SPRITES[t.name], eScale, t.color); }
+  function drawUfo(u){ drawMask(u.x,u.y, SPRITES.ufo, 2, '#ff3b3b'); }
+  function drawShields(){ ctx.fillStyle='#ff7f00'; shields.forEach(sh=>{ for(let j=0;j<SH_H;j++) for(let i=0;i<SH_W;i++) if(sh.mask[j*SH_W+i]) ctx.fillRect(sh.x+i*SH_SZ, sh.y+j*SH_SZ, SH_SZ, SH_SZ); }); }
+  function drawBullets(){ ctx.fillStyle='#fff'; bullets.forEach(b=>ctx.fillRect(b.x-1,b.y-6,2,6)); ctx.fillStyle='#9ff'; missiles.forEach(m=>ctx.fillRect(m.x-1.5,m.y,3,8)); }
+  function rectsOverlap(ax,ay,aw,ah,bx,by,bw,bh){ return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by; }
+  function damageShieldAt(x,y,r=3){ shields.forEach(sh=>{ const lx=x-sh.x, ly=y-sh.y; if(lx>=0&&ly>=0&&lx<SH_W*SH_SZ&&ly<SH_H*SH_SZ){ for(let j=0;j<SH_H;j++) for(let i=0;i<SH_W;i++){ if(!sh.mask[j*SH_W+i]) continue; const cx=i*SH_SZ+SH_SZ/2, cy=j*SH_SZ+SH_SZ/2; if(Math.hypot(lx-cx,ly-cy)<=r) sh.mask[j*SH_W+i]=0; } } }); }
+
+  // ---------- Loop ----------
+  let tPrev=now();
+  function loop(t){
+    const dt=Math.min(40, t-tPrev)/1000; tPrev=t;
+    if(state.running) update(dt);
+    render(); requestAnimationFrame(loop);
+  }
+
+  function update(dt){
+    const t = performance.now();
+    // keyboard assist move
+    if(keys.has('ArrowLeft')) player.x -= player.speed*dt;
+    if(keys.has('ArrowRight')) player.x += player.speed*dt;
+    player.x = clamp(player.x, 20, W-20);
+
+    // fire (while holding)
+    if(firing && t >= nextShot) tryShoot(t);
+
+    // bullets
+    for(let i=bullets.length-1;i>=0;i--){
+      const b=bullets[i]; b.y += b.vy*dt;
+      if (b.y < shieldY + SH_H*SH_SZ && b.y > shieldY-10){ damageShieldAt(b.x,b.y,5); bullets.splice(i,1); continue; }
+      let hit=false;
+      for(const e of enemies){ if(!e.alive) continue; const sp=SPRITES[ENEMY_TYPES[e.r].name]; const w=sp.w*eScale, h=sp.h*eScale;
+        if(rectsOverlap(b.x-1,b.y-6,2,6, e.x-w/2, e.y-h/2, w, h)){ e.alive=false; bullets.splice(i,1); hit=true; addScore(ENEMY_TYPES[e.r].score); hitTone(); break; } }
+      if(hit) continue;
+      if(ufo && ufo.alive){ const w=SPRITES.ufo.w*2,h=SPRITES.ufo.h*2;
+        if(rectsOverlap(b.x-1,b.y-6,2,6, ufo.x-w/2,ufo.y-h/2,w,h)){ bullets.splice(i,1); ufo.alive=false; addScore(100); hitTone(); } }
+      if(b.y<-8) bullets.splice(i,1);
+    }
+
+    // enemy fire
+    if(tPrev - state.lastEnemyShot > state.enemyFireCD){
+      const alive = enemies.filter(e=>e.alive);
+      if(alive.length){
+        const col=Math.floor(rand(0,COLS));
+        const cand = alive.filter(e=>e.c===col).sort((a,b)=>b.r-a.r)[0] || alive[Math.floor(rand(0,alive.length))];
+        missiles.push({x:cand.x, y:cand.y+10, vy:140});
+      }
+      state.lastEnemyShot = tPrev;
+      const aliveN = enemies.filter(e=>e.alive).length;
+      state.stepInterval = clamp(520 - (55-aliveN)*6, 120, 520);
+      state.enemyFireCD = clamp(740 - (55-aliveN)*5, 300, 740);
+    }
+
+    // missiles
+    const pb = playerBox();
+    for(let i=missiles.length-1;i>=0;i--){
+      const m=missiles[i]; m.y += m.vy*dt;
+      if(m.y>=shieldY-6 && m.y<shieldY+SH_H*SH_SZ){ damageShieldAt(m.x,m.y,6); missiles.splice(i,1); continue; }
+      if(rectsOverlap(m.x-1.5,m.y,3,8, player.x-pb.w/2, player.y-pb.h/2, pb.w, pb.h)){ missiles.splice(i,1); loseLife(); continue; }
+      if(m.y>H+10) missiles.splice(i,1);
+    }
+
+    // formation step
+    state.stepTimer += dt*1000;
+    if(state.stepTimer >= state.stepInterval){
+      state.stepTimer = 0;
+      const alive = enemies.filter(e=>e.alive);
+      if(alive.length){
+        const minX=Math.min(...alive.map(e=>e.x - SPRITES[ENEMY_TYPES[e.r].name].w*eScale/2));
+        const maxX=Math.max(...alive.map(e=>e.x + SPRITES[ENEMY_TYPES[e.r].name].w*eScale/2));
+        const hitEdge = (state.dir>0 && maxX+8>=W-10) || (state.dir<0 && minX-8<=10);
+        if(hitEdge){ state.dir*=-1; state.dropNext=true; }
+        for(const e of alive){ if(state.dropNext) e.y+=12; else e.x += state.dir*6; }
+        state.dropNext=false;
+        stepTone(state.stepSoundIdx++);
+        for(const e of alive){ if(e.y + SPRITES[ENEMY_TYPES[e.r].name].h*eScale/2 >= player.y-12){ gameOver(false); break; } }
+      }else{ nextRound(); }
+    }
+
+    // UFO
+    if(!ufo && tPrev >= nextUfoAt){ ufo = {x:-20,y:44,dir:1,alive:true}; ufoTone(); }
+    if(ufo){ ufo.x += 120*dt*ufo.dir; if(ufo.x>W+20){ ufo=null; nextUfoAt = tPrev+rand(9000,16000); } if(ufo && !ufo.alive){ ufo=null; nextUfoAt=tPrev+rand(12000,18000); } }
+  }
+
+  function render(){
+    clear();
+    drawShields();
+    enemies.forEach(e=>{ if(e.alive) drawEnemy(e); });
+    if(ufo) drawUfo(ufo);
+    drawCannon();
+    drawBullets();
+    drawText('LIVES '+state.lives, 8, H-8, 10, 'left');
+  }
+
+  function addScore(n){ state.score += n; scoreEl.textContent = String(state.score).padStart(4,'0'); if(state.score>state.hiscore){ state.hiscore=state.score; hiscoreEl.textContent=String(state.hiscore).padStart(4,'0'); } }
+  function loseLife(){ state.lives -= 1; hitTone(); if(state.lives<=0){ gameOver(true); return; } missiles.length=0; }
+  function nextRound(){
+    state.round += 1; roundEl.textContent = String(state.round).padStart(2,'0');
+    enemies.forEach(e=>{ e.alive=true; const sp=SPRITES[ENEMY_TYPES[e.r].name]; e.x = formation.x + e.c*(sp.w*eScale + formation.gapX); e.y = formation.y + e.r*(sp.h*eScale + formation.gapY); });
+    shields.forEach(sh=>{ sh.mask=[...shieldPattern]; });
+    state.stepInterval = clamp(state.stepInterval*0.92, 110, 520);
+    state.enemyFireCD = clamp(state.enemyFireCD*0.94, 280, 740);
+  }
+  function gameOver(){ state.running=false; drawText('GAME OVER', W/2, H/2, 22, 'center'); drawText('탭/클릭하여 재시작', W/2, H/2+22, 12, 'center'); }
+  cvs.addEventListener('pointerdown', ()=>{ if(!state.running) restart(); }, {passive:true});
+  function restart(){
+    state.running=true; state.score=0; scoreEl.textContent='0000'; state.round=1; roundEl.textContent='01'; state.lives=3;
+    enemies.forEach(e=>{ e.alive=true; const sp=SPRITES[ENEMY_TYPES[e.r].name]; e.x = formation.x + e.c*(sp.w*eScale + formation.gapX); e.y = formation.y + e.r*(sp.h*eScale + formation.gapY); });
+    shields.forEach(sh=>{ sh.mask=[...shieldPattern]; });
+    bullets.length=0; missiles.length=0; ufo=null; nextUfoAt = now()+rand(8000,14000);
+    state.stepInterval=520; state.enemyFireCD=740; state.dir=1; state.dropNext=false; state.stepSoundIdx=0;
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
