@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2인용 텍사스 홀덤 — Player vs Computer</title>
+<style>
+  :root{
+    --bg:#0b3d2e; /* felt */
+    --felt:#0f5140;
+    --card:#ffffff;
+    --ink:#1f2937;
+    --accent:#10b981; /* emerald */
+    --danger:#ef4444;
+    --muted:#94a3b8;
+    --gold:#f59e0b;
+  }
+  html,body{margin:0;height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple Color Emoji,Noto Color Emoji,Helvetica,Arial,sans-serif;background:radial-gradient(1200px 800px at 50% 20%, var(--felt), var(--bg));color:#e5e7eb}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px 16px 24px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+  h1{font-size:20px;margin:0;font-weight:700;letter-spacing:0.2px}
+  .badge{font-size:12px;border:1px solid #2dd4bf;color:#a7f3d0;padding:2px 8px;border-radius:999px}
+  .table{position:relative;border:2px solid #0b2b22;border-radius:20px;padding:16px;background:radial-gradient(800px 500px at 50% 50%, rgba(255,255,255,0.06), rgba(0,0,0,0.12)), var(--felt);box-shadow:0 10px 30px rgba(0,0,0,.35) inset}
+  .row{display:flex;justify-content:space-between;gap:12px}
+  .zone{flex:1;min-height:130px;border-radius:14px;padding:12px}
+  .zone h3{margin:0 0 6px 0;font-size:13px;color:#cbd5e1;display:flex;align-items:center;gap:8px}
+  .dealer{display:inline-block;background:var(--gold);color:#000;font-weight:700;border-radius:999px;padding:0 8px;font-size:12px}
+  .chips{font-size:13px;color:#e2e8f0}
+  .cards{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .card{width:64px;height:92px;background:var(--card);border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;position:relative;font-weight:700;color:var(--ink)}
+  .card .rank{font-size:22px}
+  .card .suit{position:absolute;bottom:6px;right:8px;font-size:18px}
+  .card.red{color:#c026d3}
+  .card.heart,.card.diamond{color:#e11d48}
+  .card.spade,.card.club{color:#111827}
+  .card.back{background:linear-gradient(45deg,#0ea5e9,#8b5cf6);color:#fff;position:relative}
+  .card.back:before{content:"";position:absolute;inset:6px;border-radius:8px;border:2px solid rgba(255,255,255,.6)}
+  .center{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .pot{font-size:16px;font-weight:700;color:#f8fafc}
+  .board{display:flex;gap:10px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:10px}
+  button{appearance:none;border:none;border-radius:10px;padding:10px 14px;background:#134e4a;color:#ecfeff;font-weight:700;cursor:pointer;box-shadow:0 2px 0 #08342f;transition:transform .04s ease, filter .2s}
+  button:active{transform:translateY(2px)}
+  button[disabled]{opacity:0.5;cursor:not-allowed;filter:grayscale(1)}
+  .primary{background:#0ea5e9}
+  .danger{background:#ef4444}
+  .gold{background:#f59e0b;color:#111827}
+  .muted{background:#334155}
+  .status{margin-top:12px;font-size:13px;color:#e2e8f0;background:#0b2b22;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:8px 10px;max-height:160px;overflow:auto}
+  .status b{color:#a7f3d0}
+  .row + .row{margin-top:12px}
+  .footer{margin-top:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+  .legend{font-size:12px;color:#a3e635}
+  .divider{height:1px;background:rgba(255,255,255,.08);margin:8px 0}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#052e2b;font-size:12px;border:1px solid rgba(255,255,255,.08)}
+  @media (max-width:720px){
+    .card{width:56px;height:84px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>텍사스 홀덤 (2인용) · Player vs Computer</h1>
+    <span class="badge" title="Shuffled with window.crypto.getRandomValues() for fairness">공정 셔플: Crypto RNG</span>
+  </header>
+  <div class="table">
+    <div class="row">
+      <div class="zone" id="cpuZone">
+        <h3>컴퓨터 <span class="dealer" id="cpuDealer" style="display:none">D</span> <span class="chips" id="cpuChips">–</span></h3>
+        <div class="cards" id="cpuCards"></div>
+      </div>
+      <div class="zone center">
+        <div class="pot">Pot: <span id="pot">0</span> 칩</div>
+        <div class="board" id="board"></div>
+        <div class="controls">
+          <button id="btnCheck" class="muted">체크</button>
+          <button id="btnCall" class="primary">콜</button>
+          <button id="btnBet" class="gold">베팅 +10</button>
+          <button id="btnRaise" class="gold">레이즈 +10</button>
+          <button id="btnAllIn" class="primary">올인</button>
+          <button id="btnFold" class="danger">폴드</button>
+          <button id="btnNext" class="muted" style="display:none">다음 핸드</button>
+          <button id="btnNew" class="muted" title="새 게임으로 칩 1000/1000 초기화">새 게임</button>
+        </div>
+        <div class="status" id="log"></div>
+      </div>
+      <div class="zone" id="youZone">
+        <h3>플레이어 <span class="dealer" id="youDealer" style="display:none">D</span> <span class="chips" id="youChips">–</span> <span class="pill">한 번 베팅: 10칩</span></h3>
+        <div class="cards" id="youCards"></div>
+      </div>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="legend">규칙: 두 플레이어는 각 1000칩으로 시작. 소액·대액 블라인드는 각 10칩. 모든 베팅/레이즈는 10칩 단위. Crypto RNG 셔플.</div>
+  </div>
+</div>
+<script>
+(function(){
+  // ===== Utilities =====
+  const SUITS = ['S','H','D','C'];
+  const SUIT_SYMBOL = {S:'♠', H:'♥', D:'♦', C:'♣'};
+  const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11=J,12=Q,13=K,14=A
+  const RANK_LABEL = r => r<=10? String(r) : ({11:'J',12:'Q',13:'K',14:'A'})[r];
+  const logEl = document.getElementById('log');
+  function log(msg){
+    const p = document.createElement('div');
+    p.innerHTML = msg; logEl.appendChild(p); logEl.scrollTop = logEl.scrollHeight;
+  }
+  function $(id){return document.getElementById(id)}
+  // Crypto-strong shuffle
+  function cryptoShuffle(arr){
+    const a = arr.slice();
+    for(let i=a.length-1;i>0;i--){
+      const randArr = new Uint32Array(1); window.crypto.getRandomValues(randArr);
+      const j = randArr[0] % (i+1);
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
+  }
+  function freshDeck(){
+    const d=[]; for(const s of SUITS){ for(const r of RANKS){ d.push({r,s}); } } return cryptoShuffle(d);
+  }
+  function cardHTML(c, faceUp=true){
+    const el = document.createElement('div'); el.className = 'card';
+    if(!faceUp){ el.classList.add('back'); return el; }
+    el.classList.add(c.s==='H'?'heart': c.s==='D'?'diamond': c.s==='S'?'spade':'club');
+    el.innerHTML = `<span class="rank">${RANK_LABEL(c.r)}</span><span class="suit">${SUIT_SYMBOL[c.s]}</span>`;
+    return el;
+  }
+  // ===== Game State =====
+  const state = {
+    you:{chips:1000, hole:[], investedStreet:0},
+    cpu:{chips:1000, hole:[], investedStreet:0},
+    board:[],
+    pot:0,
+    deck:[],
+    street:'idle', // preflop, flop, turn, river, showdown
+    dealer:'you', // rotates each hand
+    toAct:null,
+    currentBet:0, // amount to call on this street
+    handOver:false,
+    revealCPU:false,
+    capPerStreet:4, // max number of bets/raises per street (limit-like)
+    raisesThisStreet:0
+  };
+  // ===== Hand Evaluation =====
+  // Return a score array where lexicographic comparison determines winner.
+  // [category, tiebreakers...] category: 8=StraightFlush,7=FourKind,6=FullHouse,5=Flush,4=Straight,3=Trips,2=TwoPair,1=Pair,0=HighCard
+  function evaluate5(cards){
+    const ranks = cards.map(c=>c.r).slice().sort((a,b)=>b-a);
+    const suits = cards.map(c=>c.s);
+    // counts by rank
+    const counts = {};
+    for(const r of ranks){ counts[r] = (counts[r]||0)+1; }
+    const uniq = [...new Set(ranks)].sort((a,b)=>b-a);
+    // Flush?
+    let flushSuit=null; for(const s of ['S','H','D','C']){ if(suits.filter(x=>x===s).length>=5){ flushSuit=s; break; } }
+    const isFlush = flushSuit!==null;
+    const flushRanks = isFlush? cards.filter(c=>c.s===flushSuit).map(c=>c.r).sort((a,b)=>b-a) : [];
+    // Straight (handle A-5)
+    function bestStraight(vals){
+      const v = [...new Set(vals)].sort((a,b)=>b-a);
+      // include wheel
+      if(v.includes(14)) v.push(1);
+      let run=1, bestHigh=0;
+      for(let i=0;i<v.length-1;i++){
+        if(v[i]-1===v[i+1]){ run++; if(run>=5){ bestHigh = v[i-3]; break; } }
+        else run=1;
+      }
+      return bestHigh; // 0 if none, otherwise high card of straight
+    }
+    const straightHigh = bestStraight(ranks);
+    let straightFlushHigh = 0;
+    if(isFlush){ straightFlushHigh = bestStraight(flushRanks); }
+    if(straightFlushHigh){ return [8, straightFlushHigh]; }
+    // groups: four, three, pairs
+    const groups = Object.entries(counts).map(([r,c])=>({r:parseInt(r), c})).sort((a,b)=> b.c - a.c || b.r - a.r);
+    const four = groups.find(g=>g.c===4);
+    const trips = groups.filter(g=>g.c===3);
+    const pairs = groups.filter(g=>g.c===2);
+    if(four){
+      const kicker = uniq.find(x=>x!==four.r);
+      return [7, four.r, kicker];
+    }
+    if(trips.length && pairs.length){
+      return [6, trips[0].r, pairs[0].r];
+    }
+    if(trips.length>=2){ // use two trips -> higher as trip, lower as pair (full house)
+      return [6, trips[0].r, trips[1].r];
+    }
+    if(isFlush){ return [5, ...flushRanks.slice(0,5)]; }
+    if(straightHigh){ return [4, straightHigh]; }
+    if(trips.length){
+      const kickers = uniq.filter(x=>x!==trips[0].r).slice(0,2);
+      return [3, trips[0].r, ...kickers];
+    }
+    if(pairs.length>=2){
+      const highPair=pairs[0].r, lowPair=pairs[1].r, kicker=uniq.find(x=>x!==highPair && x!==lowPair);
+      return [2, highPair, lowPair, kicker];
+    }
+    if(pairs.length===1){
+      const pair = pairs[0].r;
+      const kickers = uniq.filter(x=>x!==pair).slice(0,3);
+      return [1, pair, ...kickers];
+    }
+    return [0, ...uniq.slice(0,5)];
+  }
+  function bestOf7(cards){
+    // choose best 5 from up to 7
+    const n = cards.length; let best=null;
+    function choose5(start=0, picked=[]){
+      if(picked.length===5){
+        const score = evaluate5(picked);
+        if(!best || compareScore(score,best)>0) best=score;
+        return;
+      }
+      for(let i=start;i<n;i++) choose5(i+1, picked.concat(cards[i]));
+    }
+    choose5(0,[]); return best;
+  }
+  function compareScore(a,b){
+    for(let i=0;i<Math.max(a.length,b.length);i++){
+      const x = (a[i]??-1), y=(b[i]??-1);
+      if(x>y) return 1; if(x<y) return -1;
+    }
+    return 0;
+  }
+  // Draw detectors (for AI)
+  function hasFlushDraw(hole, board){
+    const all = hole.concat(board);
+    const countBySuit = {S:0,H:0,D:0,C:0};
+    all.forEach(c=>countBySuit[c.s]++);
+    return Object.values(countBySuit).some(v=>v===4);
+  }
+  function hasOESD(hole, board){
+    const all = hole.concat(board);
+    const vals = [...new Set(all.map(c=>c.r))].sort((a,b)=>a-b);
+    // A as 1
+    if(vals.includes(14)) vals.unshift(1);
+    let run=1; for(let i=1;i<vals.length;i++){
+      if(vals[i]===vals[i-1]+1){ run++; if(run>=4) return true; }
+      else if(vals[i]!==vals[i-1]) run=1;
+    }
+    return false;
+  }
+  // ===== Rendering =====
+  function render(){
+    $('cpuChips').textContent = state.cpu.chips+" 칩";
+    $('youChips').textContent = state.you.chips+" 칩";
+    $('pot').textContent = state.pot;
+    // Dealer badges
+    $('cpuDealer').style.display = (state.dealer==='cpu')?'inline-block':'none';
+    $('youDealer').style.display = (state.dealer==='you')?'inline-block':'none';
+    const cpuCards = $('cpuCards'); cpuCards.innerHTML='';
+    if(state.cpu.hole.length){
+      cpuCards.appendChild(cardHTML(state.cpu.hole[0], state.revealCPU));
+      cpuCards.appendChild(cardHTML(state.cpu.hole[1], state.revealCPU));
+    }
+    const youCards = $('youCards'); youCards.innerHTML='';
+    if(state.you.hole.length){
+      youCards.appendChild(cardHTML(state.you.hole[0], true));
+      youCards.appendChild(cardHTML(state.you.hole[1], true));
+    }
+    const board = $('board'); board.innerHTML='';
+    state.board.forEach(c=> board.appendChild(cardHTML(c,true)) );
+    // Controls enable/disable
+    const yourTurn = state.toAct==='you' && !state.handOver;
+    $('btnCheck').disabled = !yourTurn || state.currentBet>state.you.investedStreet;
+    $('btnCall').disabled = !yourTurn || state.currentBet<=state.you.investedStreet || state.you.chips<=0;
+    $('btnBet').disabled  = !yourTurn || state.currentBet>0 || state.you.chips<=0 || state.raisesThisStreet>=state.capPerStreet;
+    $('btnRaise').disabled= !yourTurn || state.currentBet===0 || state.you.chips<=0 || state.raisesThisStreet>=state.capPerStreet;
+    $('btnAllIn').disabled= !yourTurn || state.you.chips<=0;
+    $('btnFold').disabled = !yourTurn || (state.currentBet===0 && state.street!=='preflop');
+    $('btnNext').style.display = state.handOver? 'inline-block':'none';
+  }
+  // ===== Betting helpers =====
+  function post(amount, who){
+    const p = state[who];
+    const v = Math.min(amount, p.chips);
+    p.chips -= v; state.pot += v; p.investedStreet += v;
+  }
+  function resetStreet(){
+    state.currentBet = 0; state.you.investedStreet=0; state.cpu.investedStreet=0; state.raisesThisStreet=0;
+  }
+  function nextStreet(){
+    if(state.street==='preflop'){
+      // Burn 1, then 3 to board
+      state.deck.pop(); state.board.push(state.deck.pop(), state.deck.pop(), state.deck.pop());
+      state.street='flop'; log('<b>플랍 공개</b>');
+      resetStreet(); state.toAct = (state.dealer==='you')?'cpu':'you';
+    } else if(state.street==='flop'){
+      state.deck.pop(); state.board.push(state.deck.pop());
+      state.street='turn'; log('<b>턴 공개</b>');
+      resetStreet(); state.toAct = (state.dealer==='you')?'cpu':'you';
+    } else if(state.street==='turn'){
+      state.deck.pop(); state.board.push(state.deck.pop());
+      state.street='river'; log('<b>리버 공개</b>');
+      resetStreet(); state.toAct = (state.dealer==='you')?'cpu':'you';
+    } else if(state.street==='river'){
+      showdown(); return;
+    }
+    render(); if(state.toAct==='cpu') setTimeout(cpuAct, 450);
+  }
+  function showdown(){
+    state.street='showdown'; state.revealCPU=true;
+    const youScore = bestOf7(state.you.hole.concat(state.board));
+    const cpuScore = bestOf7(state.cpu.hole.concat(state.board));
+    const cmp = compareScore(youScore,cpuScore);
+    if(cmp>0){ log('<b>쇼다운:</b> 플레이어 승리! Pot '+state.pot+' 칩 획득'); state.you.chips += state.pot; }
+    else if(cmp<0){ log('<b>쇼다운:</b> 컴퓨터 승리! Pot '+state.pot+' 칩 획득'); state.cpu.chips += state.pot; }
+    else { // split
+      log('<b>쇼다운:</b> 무승부. Pot 분할'); state.you.chips += Math.floor(state.pot/2); state.cpu.chips += state.pot - Math.floor(state.pot/2);
+    }
+    state.pot=0; state.handOver=true; render();
+  }
+  // ===== AI Logic =====
+  function rankKey(a,b){ return b-a; }
+  function preflopTier(hole){
+    const [a,b] = hole.map(c=>c.r).sort(rankKey);
+    const suited = hole[0].s===hole[1].s;
+    const pair = a===b;
+    const big = a; const small=b;
+    // Simple chart
+    if(pair && a>=13) return 5; // AA KK
+    if(pair && a===12) return 4; // QQ
+    if(pair && a===11) return 4; // JJ
+    if((big===14 && small===13 && suited) || (big===14 && small===13)) return 4; // AKs/AK
+    if(pair && a===10) return 3; // TT
+    if((big===14 && small>=11 && suited) || (big===13 && small===12 && suited)) return 3; // AQs,AJs,KQs
+    if((pair && a>=7) || (big===14 && small>=10) || (suited && big>=12 && small>=10)) return 2; // 99-77, AQo, etc.
+    if(suited && big>=11 && small>=9) return 2; // KJs,QJs,JTs
+    return 1; // rest
+  }
+  function strengthOnBoard(hole, board){
+    const score = bestOf7(hole.concat(board));
+    const cat = score[0];
+    const fd = hasFlushDraw(hole, board);
+    const oesd = hasOESD(hole, board);
+    // Map to rough strength 0..100
+    let base = 0;
+    switch(cat){
+      case 8: base=98; break; // straight flush
+      case 7: base=95; break; // four
+      case 6: base=90; break; // full house
+      case 5: base=82; break; // flush
+      case 4: base=78; break; // straight
+      case 3: base=70; break; // trips
+      case 2: base=62; break; // two pair
+      case 1: base=52; break; // one pair
+      default: base=35; // high card
+    }
+    if(cat<=1){ if(fd) base+=8; if(oesd) base+=8; }
+    // Slightly weight for kicker when one-pair
+    if(cat===1){ const pairRank = score[1]; if(pairRank>=13) base+=6; else if(pairRank<=6) base-=4; }
+    return Math.max(0, Math.min(100, base));
+  }
+  function cpuAct(){
+    if(state.handOver) return;
+    const me='cpu', opp='you';
+    const need = state.currentBet - state.cpu.investedStreet; // to call
+    const street = state.street;
+    let action='check';
+    if(street==='preflop'){
+      const tier = preflopTier(state.cpu.hole);
+      // With 2 players and blind=10, basic strategy
+      if(need>0){ // facing a bet
+        if(tier>=4){ action = (state.raisesThisStreet<state.capPerStreet && state.cpu.chips>=need+10)?'raise':'call'; }
+        else if(tier===3){ action = (Math.random()<0.4 && state.cpu.chips>=need+10 && state.raisesThisStreet<state.capPerStreet)?'raise':'call'; }
+        else if(tier===2){ action = (need<=10)?'call':'fold'; }
+        else { action = (need<=10 && Math.random()<0.5)?'call':'fold'; }
+      }else{ // unopened
+        if(tier>=4){ action = 'bet'; }
+        else if(tier===3){ action = (Math.random()<0.6)?'bet':'check'; }
+        else if(tier===2){ action = (Math.random()<0.35)?'bet':'check'; }
+        else action='check';
+      }
+    } else { // postflop streets
+      const str = strengthOnBoard(state.cpu.hole, state.board);
+      if(need>0){
+        if(str>=80){ action = (state.raisesThisStreet<state.capPerStreet && state.cpu.chips>=need+10)?'raise':'call'; }
+        else if(str>=65){ action = (Math.random()<0.4 && state.raisesThisStreet<state.capPerStreet && state.cpu.chips>=need+10)?'raise':'call'; }
+        else if(str>=45){ action = (need<=10)?'call':'fold'; }
+        else {
+          // call small bets with strong draws
+          const fd = hasFlushDraw(state.cpu.hole, state.board);
+          const oesd = hasOESD(state.cpu.hole, state.board);
+          action = ((need<=10) && (fd||oesd) && Math.random()<0.7)?'call':'fold';
+        }
+      } else { // not facing bet
+        if(str>=80){ action='bet'; }
+        else if(str>=65){ action = (Math.random()<0.6)?'bet':'check'; }
+        else {
+          const fd = hasFlushDraw(state.cpu.hole, state.board);
+          const oesd = hasOESD(state.cpu.hole, state.board);
+          action = ((fd||oesd) && Math.random()<0.45)?'bet':'check';
+        }
+      }
+    }
+    doAction(me, action);
+  }
+  // ===== Flow Control =====
+  function startHand(){
+    state.board=[]; state.deck=freshDeck(); state.pot=0; state.handOver=false; state.revealCPU=false; state.street='preflop'; state.raisesThisStreet=0;
+    state.you.hole=[state.deck.pop(), state.deck.pop()];
+    state.cpu.hole=[state.deck.pop(), state.deck.pop()];
+    resetStreet();
+    // Blinds: SB 10, BB 10 (both 10칩 고정)
+    const sb = (state.dealer==='you')? 'you':'cpu';
+    const bb = (state.dealer==='you')? 'cpu':'you';
+    post(10, sb); post(10, bb);
+    state.currentBet = 10; // bet to call is 10
+    log(`<b>새 핸드 시작</b> — 딜러: ${state.dealer==='you'?'플레이어':'컴퓨터'} · SB/BB: 10/10`);
+    // Preflop action starts with SB (heads-up 규칙)
+    state.toAct = sb;
+    render();
+    if(state.toAct==='cpu') setTimeout(cpuAct, 500);
+  }
+  function endHandByFold(folded){
+    const winner = (folded==='you')?'cpu':'you';
+    log(`<b>${folded==='you'?'플레이어':'컴퓨터'}</b> 폴드 → ${winner==='you'?'플레이어':'컴퓨터'} 승리. Pot ${state.pot} 칩 획득`);
+    state[winner].chips += state.pot; state.pot=0; state.handOver=true; state.revealCPU=true; render();
+  }
+  function proceedIfStreetDone(){
+    // Street ends when both players have equal invested and currentBet==that value
+    if(state.handOver) return;
+    const a = state.you.investedStreet, b = state.cpu.investedStreet;
+    if(a===b){ // no pending action, move street
+      if(state.street==='preflop' && a===state.currentBet){ nextStreet(); }
+      else if((state.street==='flop' || state.street==='turn' || state.street==='river') && state.currentBet===0){ nextStreet(); }
+      else if((state.street==='flop' || state.street==='turn' || state.street==='river') && a===state.currentBet){ nextStreet(); }
+    }
+  }
+  function rotateDealer(){ state.dealer = (state.dealer==='you')?'cpu':'you'; }
+  function doAction(who, action){
+    if(state.handOver) return;
+    const me = state[who]; const oppName = (who==='you')?'cpu':'you';
+    if(action==='check'){
+      log(`<b>${who==='you'?'플레이어':'컴퓨터'}</b>: 체크`);
+      // If both checked with no bet, street completes
+      if(state.currentBet===0){
+        // Switch turn to opponent; if opponent also checked previously and investments equal, nextStreet()
+        state.toAct = oppName;
+        render();
+        if(state.toAct==='cpu') setTimeout(cpuAct, 450);
+        // If opponent had just checked before? We'll rely on proceed at their action
+      } else {
+        // shouldn't happen (cannot check facing bet)
+      }
+    }
+    else if(action==='bet'){
+      if(me.chips<=0) return;
+      const add = Math.min(10, me.chips);
+      state.currentBet = add; state.raisesThisStreet=1; post(add, who);
+      log(`<b>${who==='you'?'플레이어':'컴퓨터'}</b>: 베팅 ${add}`);
+      state.toAct = oppName; render(); if(state.toAct==='cpu') setTimeout(cpuAct, 450);
+    }
+    else if(action==='raise'){
+      if(me.chips<=0) return;
+      const need = state.currentBet - me.investedStreet;
+      const raiseBy = Math.min(10, me.chips - Math.min(need, me.chips));
+      const callAmt = Math.min(need, me.chips);
+      post(callAmt, who);
+      if(raiseBy>0){ state.currentBet += 10; state.raisesThisStreet++; post(10, who); }
+      log(`<b>${who==='you'?'플레이어':'컴퓨터'}</b>: ${raiseBy>0?'레이즈 10 (콜 포함)':'콜(올인)'} — 현재 요구액 ${state.currentBet}`);
+      state.toAct = oppName; render(); if(state.toAct==='cpu') setTimeout(cpuAct, 450);
+    }
+    else if(action==='call'){
+      const need = state.currentBet - me.investedStreet;
+      const amt = Math.min(need, me.chips);
+      post(amt, who); log(`<b>${who==='you'?'플레이어':'컴퓨터'}</b>: 콜 ${amt}`);
+      // after a call, if both equal, move street
+      state.toAct = oppName; render();
+      proceedIfStreetDone();
+      if(!state.handOver && state.toAct==='cpu' && (state.you.investedStreet!==state.cpu.investedStreet)) setTimeout(cpuAct, 450);
+    }
+    else if(action==='fold'){
+      endHandByFold(who);
+    }
+    else if(action==='allin'){
+      const need = Math.max(0, state.currentBet - me.investedStreet);
+      const toPut = me.chips; post(toPut, who);
+      log(`<b>${who==='you'?'플레이어':'컴퓨터'}</b>: 올인 (${toPut})`);
+      // Opponent can call, creating side scenarios. For simplicity, treat remaining streets as automatic reveals with no further betting if both called/equal.
+      state.toAct = oppName; render();
+      if(oppName==='cpu') setTimeout(cpuAct, 450); else {
+        // wait for player action
+      }
+    }
+  }
+  // ===== Button bindings =====
+  document.getElementById('btnCheck').addEventListener('click', ()=> doAction('you','check'));
+  document.getElementById('btnCall').addEventListener('click', ()=> doAction('you','call'));
+  document.getElementById('btnBet').addEventListener('click',  ()=> doAction('you','bet'));
+  document.getElementById('btnRaise').addEventListener('click',()=> doAction('you','raise'));
+  document.getElementById('btnAllIn').addEventListener('click',()=> doAction('you','allin'));
+  document.getElementById('btnFold').addEventListener('click', ()=> doAction('you','fold'));
+  document.getElementById('btnNext').addEventListener('click', ()=>{
+    if(!state.handOver) return;
+    rotateDealer(); startHand(); document.getElementById('btnNext').style.display='none';
+  });
+  document.getElementById('btnNew').addEventListener('click', ()=>{
+    state.you.chips=1000; state.cpu.chips=1000; state.dealer='you'; startHand(); log('<b>새 게임 시작</b> 칩 1000/1000으로 초기화');
+  });
+  // ===== Initialize =====
+  startHand();
+})();
+</script>
+</body>
+</html>
