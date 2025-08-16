@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Archery – 10 Shots</title>
+  <style>
+    :root{
+      --bg:#0e1116; --panel:#161b22; --ink:#e6edf3; --muted:#9da9b3; --accent:#3ea6ff; --good:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Apple SD Gothic Neo, Malgun Gothic, sans-serif}
+    .wrap{display:grid;grid-template-columns:1fr 320px;gap:14px;height:100%;padding:12px}
+    #game{width:100%;height:100%;border-radius:12px;background:#0b0e13;display:block;touch-action:none}
+    .hud{background:var(--panel);border:1px solid #222833;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:12px}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .badge{padding:4px 8px;border-radius:999px;border:1px solid #2a3240;background:#11151b;color:var(--muted)}
+    .meter{height:10px;background:#0f141c;border:1px solid #2a3240;border-radius:999px;overflow:hidden}
+    .meter>i{display:block;height:100%;background:linear-gradient(90deg,#3ea6ff,#22c55e)}
+    .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 12px;border-radius:10px;border:1px solid #2a3240;background:#121722;color:var(--ink);cursor:pointer}
+    .btn:hover{filter:brightness(1.1)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .list{display:grid;grid-template-columns:1fr auto;gap:6px;border-top:1px dashed #2a3240;padding-top:8px}
+    .muted{color:var(--muted)}
+    .help{font-size:13px;color:#b6c2ce}
+    .title{font-weight:700}
+    .divider{border-top:1px solid #242b36;margin:6px 0}
+    .center{display:flex;align-items:center;gap:6px}
+    .windDir{width:20px;height:20px;display:inline-block;transform:rotate(0deg);transition:transform .25s ease}
+    .windDir svg{display:block}
+    @media (max-width: 980px){
+      .wrap{grid-template-columns:1fr;grid-auto-rows:min-content 1fr}
+      .hud{order:-1}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" aria-label="Archery game canvas"></canvas>
+
+    <aside class="hud" aria-live="polite">
+      <div class="row">
+        <div class="title">양궁 – 10발 합산</div>
+        <span class="badge mono" id="status">Ready</span>
+      </div>
+
+      <div class="row">
+        <div class="center">
+          <span class="muted">바람</span>
+          <span id="windText" class="mono">–</span>
+          <span class="windDir" id="windArrow" title="Wind direction"></span>
+        </div>
+        <div class="center">
+          <span class="muted">남은 화살</span>
+          <span id="shotsLeft" class="mono">10</span>
+        </div>
+      </div>
+
+      <div>
+        <div class="muted">파워 (시위를 위→아래로 드래그)</div>
+        <div class="meter" aria-hidden="true"><i id="powerBar" style="width:0%"></i></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="row">
+        <div>총점</div>
+        <div class="mono" id="total">0</div>
+      </div>
+
+      <div class="list" id="scoreList">
+        <!-- per-shot rows injected here -->
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="help">
+        • 매 발 사수 전 <b>바람</b>이 갱신됩니다 (10% 무풍).<br/>
+        • <b>드래그</b>: 위→아래로 당겨 파워를 주고, 드래그 방향(좌/우/상/하)으로 <b>화살촉 조준</b>을 미세 조정합니다.<br/>
+        • 무풍일 때는 중앙 정조준 시 <b>10점</b>입니다. 바람이 있으면 중앙 정조준만으로는 <b>6–9점</b> 수준(풍속에 비례). 바람 방향·세기에 맞춰 역보정하면 고득점.
+      </div>
+
+      <div class="row">
+        <button class="btn" id="restartBtn" disabled>다시 시작</button>
+        <span class="muted">버전 1.0</span>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+  (()=>{
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const statusEl = document.getElementById('status');
+    const windTextEl = document.getElementById('windText');
+    const windArrowEl = document.getElementById('windArrow');
+    const shotsLeftEl = document.getElementById('shotsLeft');
+    const powerBar = document.getElementById('powerBar');
+    const totalEl = document.getElementById('total');
+    const scoreList = document.getElementById('scoreList');
+    const restartBtn = document.getElementById('restartBtn');
+
+    // Canvas sizing with DPR for crisp circles
+    let W = 0, H = 0, dpr = Math.max(1, window.devicePixelRatio || 1);
+    function resize(){
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // precompute geometry dependent on size
+      computeLayout();
+    }
+    window.addEventListener('resize', resize);
+
+    // Target geometry
+    const RINGS = 10; // 10 to 1
+    let cx=0, cy=0, ringW=0, maxR=0;
+    function computeLayout(){
+      cx = W * 0.45; // place slightly left
+      cy = H * 0.5;
+      maxR = Math.min(W*0.42, H*0.46);
+      ringW = Math.floor(maxR / RINGS);
+    }
+
+    // Colors by WA scheme (10-9: gold, 8-7: red, 6-5: blue, 4-3: black, 2-1: white)
+    const ringColors = [
+      ['#FFD700','#FFC300'], // 10,9
+      ['#FF3B30','#C81D25'], // 8,7
+      ['#1E90FF','#0066CC'], // 6,5
+      ['#4A4A4A','#1f1f1f'], // 4,3 (black)
+      ['#FFFFFF','#E9ECEF']  // 2,1 (white)
+    ];
+
+    // State
+    const TOTAL_SHOTS = 10;
+    let shotIndex = 0; // 0..9
+    let scores = [];
+    let hits = []; // {x,y,score}
+
+    // Wind per shot
+    let wind = { speed: 0, angle: 0, noWind: true }; // speed in m/s (0,1..4)
+
+    // Aiming / drag state
+    let dragging = false;
+    let startX=0, startY=0, currX=0, currY=0;
+    let drawPower=0; // 0..max
+    const MAX_DRAW = 220; // px downward
+    const MIN_DRAW = 30; // threshold to fire
+    let aimOffsetX = 0, aimOffsetY = 0; // pixels relative to center
+    const AIM_SENS = 0.6; // scale pointer delta → aim pixels
+    const MAX_AIM = 5; // in ring widths
+
+    function clamp(v,min,max){return Math.max(min, Math.min(max,v));}
+
+    function resetGame(){
+      shotIndex = 0; scores = []; hits = []; totalEl.textContent = '0';
+      scoreList.innerHTML = '';
+      restartBtn.disabled = true;
+      statusEl.textContent = 'Ready';
+      nextWind();
+      render();
+    }
+
+    function nextWind(){
+      // 10% chance of no wind
+      if(Math.random() < 0.10){
+        wind.noWind = true; wind.speed = 0; wind.angle = 0;
+        windTextEl.textContent = '무풍 (0.0 m/s)';
+        windArrowEl.innerHTML = '';
+      } else {
+        wind.noWind = false;
+        // speed uniform 1.0..4.0 m/s (maps directly to 1..4 ring widths drift for center-aim)
+        wind.speed = +( (1 + Math.random()*3).toFixed(1) );
+        wind.angle = Math.random() * Math.PI * 2; // direction TO which it blows
+        const deg = Math.round(wind.angle * 180/Math.PI);
+        windTextEl.textContent = `${wind.speed.toFixed(1)} m/s (${deg}°)`;
+        windArrowEl.innerHTML = arrowSVG(deg);
+      }
+      shotsLeftEl.textContent = String(TOTAL_SHOTS - shotIndex);
+    }
+
+    function arrowSVG(deg){
+      // rotate a simple arrow marker
+      return `<svg viewBox="0 0 32 32" width="20" height="20" style="transform:rotate(${deg}deg)">
+        <path d="M16 3 L22 9 L18 9 L18 26 L14 26 L14 9 L10 9 Z" fill="#3ea6ff"/>
+      </svg>`;
+    }
+
+    // Scoring
+    function scoreForPoint(x,y){
+      const dx = x - cx, dy = y - cy; const dist = Math.hypot(dx,dy);
+      const ringIndex = Math.floor(dist / ringW); // 0→10, 1→9, ... 9→1, ≥10→0
+      const s = Math.max(0, 10 - ringIndex);
+      return {score:s, dist};
+    }
+
+    // Draw target
+    function drawTarget(){
+      // outer background circle
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.lineWidth = 2;
+      for(let i=RINGS; i>=1; i--){
+        const r = i * ringW;
+        let color;
+        const band = Math.ceil((RINGS - (i-1)) / 2); // 1..5
+        const pairIdx = Math.min(5, Math.max(1, band)) - 1;
+        const evenOdd = (i % 2 === 0) ? 1 : 0; // alternate shade
+        color = ringColors[pairIdx][evenOdd];
+        ctx.beginPath(); ctx.fillStyle = color; ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+        // outlines for visibility
+        ctx.beginPath(); ctx.strokeStyle = '#111'; ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+      }
+      // 10-ring inner line for clarity
+      ctx.beginPath(); ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5; ctx.arc(0,0, ringW, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawWindIndicator(){
+      // draw vector arrow near top-left of canvas for redundancy
+      const x = W*0.08, y = H*0.1, len = 60 + (wind.speed*6);
+      ctx.save();
+      ctx.translate(x,y);
+      // label
+      ctx.fillStyle = '#b6c2ce'; ctx.font = '13px system-ui';
+      const label = wind.noWind ? '무풍' : `${wind.speed.toFixed(1)} m/s`;
+      ctx.fillText(label, -10, -12);
+      if(!wind.noWind){
+        ctx.rotate(wind.angle);
+        ctx.strokeStyle = '#3ea6ff'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(len,0); ctx.stroke();
+        // head
+        ctx.beginPath(); ctx.moveTo(len,0); ctx.lineTo(len-10,-6); ctx.lineTo(len-10,6); ctx.closePath(); ctx.fillStyle = '#3ea6ff'; ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawHits(){
+      for(const h of hits){
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.arc(h.x,h.y,4,0,Math.PI*2);
+        ctx.fill();
+        // small outline
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+      }
+    }
+
+    function drawAimReticle(){
+      if(!dragging) return;
+      const x = cx + aimOffsetX;
+      const y = cy + aimOffsetY;
+      ctx.save();
+      ctx.strokeStyle = '#9da9b3'; ctx.lineWidth = 1.2;
+      // crosshair
+      ctx.beginPath(); ctx.moveTo(x-10,y); ctx.lineTo(x+10,y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x,y-10); ctx.lineTo(x,y+10); ctx.stroke();
+      // small circle
+      ctx.beginPath(); ctx.arc(x,y,8,0,Math.PI*2); ctx.stroke();
+      // dashed line to center (guidance)
+      ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    function drawPowerGuide(){
+      if(!dragging) return;
+      // Show a ghost bowstring line on the right side scaled by draw
+      const bx = Math.min(W*0.86, cx + maxR + 60);
+      const top = H*0.15, bottom = H*0.85;
+      const y = clamp(top + drawPower, top, bottom);
+      ctx.save();
+      ctx.strokeStyle = '#3ea6ff'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(bx, top); ctx.lineTo(bx, y); ctx.stroke();
+      ctx.fillStyle = '#3ea6ff'; ctx.beginPath(); ctx.arc(bx, y, 6, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#b6c2ce'; ctx.font = '12px system-ui';
+      ctx.fillText('파워', bx-14, top-8);
+      ctx.restore();
+    }
+
+    function render(){
+      ctx.clearRect(0,0,W,H);
+      drawTarget();
+      drawHits();
+      drawAimReticle();
+      drawWindIndicator();
+      drawPowerGuide();
+      // center dot
+      ctx.beginPath(); ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.arc(cx,cy,2.2,0,Math.PI*2); ctx.fill();
+    }
+
+    function fire(){
+      // compute drift in pixels: wind.speed [m/s] * ringW [px]
+      const driftMag = wind.noWind ? 0 : wind.speed * ringW;
+      const dx = Math.cos(wind.angle) * driftMag;
+      const dy = Math.sin(wind.angle) * driftMag;
+
+      // Aim target point
+      const aimX = cx + aimOffsetX;
+      const aimY = cy + aimOffsetY;
+
+      // Small random dispersion (reduced if no wind)
+      const jitter = wind.noWind ? 0 : ringW * 0.12;
+      const jx = (Math.random()*2-1) * jitter;
+      const jy = (Math.random()*2-1) * jitter;
+
+      const hitX = aimX + dx + jx;
+      const hitY = aimY + dy + jy;
+
+      const {score} = scoreForPoint(hitX, hitY);
+      hits.push({x:hitX, y:hitY, score});
+      scores.push(score);
+
+      // Update score UI
+      const total = scores.reduce((a,b)=>a+b,0);
+      totalEl.textContent = String(total);
+      const row = document.createElement('div'); row.className = 'row';
+      const left = document.createElement('div'); left.textContent = `${shotIndex+1}발`; left.className='muted';
+      const right = document.createElement('div'); right.textContent = `${score}점`; right.className='mono';
+      const container = document.createElement('div'); container.style.display='contents';
+      container.append(left, right);
+      scoreList.append(container);
+
+      shotIndex++;
+      shotsLeftEl.textContent = String(TOTAL_SHOTS - shotIndex);
+
+      if(shotIndex >= TOTAL_SHOTS){
+        statusEl.textContent = 'Finished';
+        restartBtn.disabled = false;
+      } else {
+        statusEl.textContent = 'Next';
+        nextWind();
+      }
+
+      render();
+    }
+
+    // Interaction (pointer events)
+    canvas.addEventListener('pointerdown', (e)=>{
+      if(shotIndex >= TOTAL_SHOTS) return; // finished
+      canvas.setPointerCapture(e.pointerId);
+      const rect = canvas.getBoundingClientRect();
+      startX = e.clientX - rect.left; startY = e.clientY - rect.top;
+      currX = startX; currY = startY; drawPower = 0; aimOffsetX = 0; aimOffsetY = 0;
+      dragging = true; statusEl.textContent = 'Aiming';
+      render();
+    });
+
+    canvas.addEventListener('pointermove', (e)=>{
+      if(!dragging) return;
+      const rect = canvas.getBoundingClientRect();
+      currX = e.clientX - rect.left; currY = e.clientY - rect.top;
+      // vertical drag for power
+      const dy = currY - startY;
+      drawPower = clamp(dy, 0, MAX_DRAW);
+      powerBar.style.width = `${Math.round((drawPower / MAX_DRAW) * 100)}%`;
+      // fine aim: relative movement excluding the draw component
+      const rawAimX = (currX - startX) * AIM_SENS;
+      const rawAimY = (dy - drawPower) * AIM_SENS; // subtract draw component to isolate aim Y
+      const maxAimPx = MAX_AIM * ringW;
+      aimOffsetX = clamp(rawAimX, -maxAimPx, maxAimPx);
+      aimOffsetY = clamp(rawAimY, -maxAimPx, maxAimPx);
+      render();
+    });
+
+    function endDrag(e){
+      if(!dragging) return;
+      dragging = false;
+      powerBar.style.width = '0%';
+      if(drawPower < MIN_DRAW){
+        statusEl.textContent = '취소(파워 부족)';
+        render();
+        return;
+      }
+      statusEl.textContent = 'Fired';
+      fire();
+    }
+
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('pointerleave', endDrag);
+
+    restartBtn.addEventListener('click', ()=>{
+      resetGame();
+    });
+
+    // boot
+    resize();
+    resetGame();
+    // initial render
+    render();
+  })();
+  </script>
+</body>
+</html>
